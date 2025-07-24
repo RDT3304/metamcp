@@ -29,23 +29,21 @@ COPY packages/trpc/package.json ./packages/trpc/
 COPY packages/typescript-config/package.json ./packages/typescript-config/
 COPY packages/zod-types/package.json ./packages/zod-types/
 
-# Install dependencies
+# Install deps
 RUN pnpm install --frozen-lockfile
 
 # Builder stage
 FROM base AS builder
 WORKDIR /app
 
-# Copy node_modules from deps stage
+# Copy deps
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=deps /app/apps/frontend/node_modules ./apps/frontend/node_modules
 COPY --from=deps /app/apps/backend/node_modules ./apps/backend/node_modules
 COPY --from=deps /app/packages ./packages
 
-# Copy source code
+# Copy source & build
 COPY . .
-
-# Build all packages and apps
 RUN pnpm build
 
 # Production runner stage
@@ -59,7 +57,7 @@ LABEL org.opencontainers.image.licenses="MIT"
 LABEL org.opencontainers.image.title="MetaMCP"
 LABEL org.opencontainers.image.vendor="metatool‑ai"
 
-# Install curl, PostgreSQL server, and client
+# Install curl, PostgreSQL & client
 RUN apt-get update && apt-get install -y \
     curl \
     postgresql \
@@ -67,23 +65,20 @@ RUN apt-get update && apt-get install -y \
   && apt-get clean \
   && rm -rf /var/lib/apt/lists/*
 
-# Initialize PostgreSQL data directory (must run as postgres)
+# Initialize PostgreSQL (must be done as postgres)
 USER postgres
 RUN /usr/lib/postgresql/15/bin/initdb -D /var/lib/postgresql/data
 
-# Back to root for subsequent steps
+# Back to root for user setup
 USER root
 
-# Create non-root group and user
+# Create non‑root group & user
 RUN addgroup --system --gid 1001 nodejs
 RUN adduser  --system --uid 1001 --home /home/nextjs nextjs && \
     mkdir -p /home/nextjs/.cache/node/corepack && \
     chown -R nextjs:nodejs /home/nextjs
 
-# Now switch into the unprivileged user
-USER nextjs
-
-# Copy built applications and packages
+# Copy in built artifacts, setting ownership
 COPY --from=builder --chown=nextjs:nodejs /app/apps/frontend/.next ./apps/frontend/.next
 COPY --from=builder --chown=nextjs:nodejs /app/apps/frontend/package.json ./apps/frontend/
 COPY --from=builder --chown=nextjs:nodejs /app/apps/backend/dist ./apps/backend/dist
@@ -95,20 +90,24 @@ COPY --from=builder --chown=nextjs:nodejs /app/node_modules ./node_modules
 COPY --from=builder --chown=nextjs:nodejs /app/package.json ./
 COPY --from=builder --chown=nextjs:nodejs /app/pnpm-workspace.yaml ./
 
-# Install production dependencies only
+# Make /app fully owned by nextjs so pnpm can write temp files
+RUN chown -R nextjs:nodejs /app
+
+# Switch into the unprivileged user
+USER nextjs
+
+# Install production dependencies
 RUN pnpm install --prod
 
 # Install drizzle-kit for migrations
 RUN cd apps/backend && pnpm add drizzle-kit@0.31.1
 
-# Copy and make entrypoint executable
+# Copy entrypoint & mark executable
 COPY --chown=nextjs:nodejs docker-entrypoint.sh ./
 RUN chmod +x docker-entrypoint.sh
 
-# Expose frontend port
+# Expose & healthcheck
 EXPOSE 12008
-
-# Health check
 HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
   CMD curl -f http://localhost:12008/health || exit 1
 
