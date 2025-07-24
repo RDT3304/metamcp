@@ -70,6 +70,14 @@ RUN apt-get update && apt-get install -y \
 # Initialize PostgreSQL data directory
 USER postgres
 RUN /usr/lib/postgresql/15/bin/initdb -D /var/lib/postgresql/data
+USER root
+
+# Create non-root user and group
+RUN addgroup --system --gid 1001 nodejs
+RUN adduser --system --uid 1001 --home /home/nextjs nextjs && \
+    mkdir -p /home/nextjs/.cache/node/corepack && \
+    chown -R nextjs:nodejs /home/nextjs
+
 USER nextjs
 
 # Create non-root user
