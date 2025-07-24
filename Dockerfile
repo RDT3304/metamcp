@@ -11,53 +11,45 @@ RUN apt-get update && apt-get install -y \
   && apt-get clean \
   && rm -rf /var/lib/apt/lists/*
 
-# Install dependencies only when needed
+# deps stage
 FROM base AS deps
 WORKDIR /app
-
 ENV NEXT_TELEMETRY_DISABLED=1
 
-# Copy root package files
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY turbo.json ./
 
-# Copy package.json files from all workspaces
 COPY apps/frontend/package.json ./apps/frontend/
-COPY apps/backend/package.json ./apps/backend/
+COPY apps/backend/package.json  ./apps/backend/
 COPY packages/eslint-config/package.json ./packages/eslint-config/
-COPY packages/trpc/package.json ./packages/trpc/
+COPY packages/trpc/package.json        ./packages/trpc/
 COPY packages/typescript-config/package.json ./packages/typescript-config/
-COPY packages/zod-types/package.json ./packages/zod-types/
+COPY packages/zod-types/package.json   ./packages/zod-types/
 
-# Install deps
 RUN pnpm install --frozen-lockfile
 
-# Builder stage
+# builder stage
 FROM base AS builder
 WORKDIR /app
 
-# Copy deps
-COPY --from=deps /app/node_modules ./node_modules
+COPY --from=deps /app/node_modules           ./node_modules
 COPY --from=deps /app/apps/frontend/node_modules ./apps/frontend/node_modules
-COPY --from=deps /app/apps/backend/node_modules ./apps/backend/node_modules
-COPY --from=deps /app/packages ./packages
+COPY --from=deps /app/apps/backend/node_modules  ./apps/backend/node_modules
+COPY --from=deps /app/packages            ./packages
 
-# Copy source & build
 COPY . .
 RUN pnpm build
 
-# Production runner stage
+# production runner
 FROM base AS runner
 WORKDIR /app
 
-# OCI image labels
 LABEL org.opencontainers.image.source="https://github.com/metatool-ai/metamcp"
 LABEL org.opencontainers.image.description="MetaMCP - aggregates MCP servers into a unified MetaMCP"
 LABEL org.opencontainers.image.licenses="MIT"
 LABEL org.opencontainers.image.title="MetaMCP"
 LABEL org.opencontainers.image.vendor="metatool-ai"
 
-# Install curl, PostgreSQL & client
 RUN apt-get update && apt-get install -y \
     curl \
     postgresql \
@@ -65,54 +57,46 @@ RUN apt-get update && apt-get install -y \
   && apt-get clean \
   && rm -rf /var/lib/apt/lists/*
 
-# Initialize PostgreSQL (must be done as postgres)
+# initdb as postgres
 USER postgres
 RUN /usr/lib/postgresql/15/bin/initdb -D /var/lib/postgresql/data
 
-# Back to root for user setup
+# back to root for setup
 USER root
 
-# Create non‑root group & user
-RUN addgroup --system --gid 1001 nodejs
-RUN adduser  --system --uid 1001 --home /home/nextjs nextjs && \
-    mkdir -p /home/nextjs/.cache/node/corepack && \
-    chown -R nextjs:nodejs /home/nextjs
+# create non‑root user
+RUN addgroup --system --gid 1001 nodejs \
+ && adduser --system --uid 1001 --home /home/nextjs nextjs \
+ && mkdir -p /home/nextjs/.cache/node/corepack \
+ && chown -R nextjs:nodejs /home/nextjs
 
-# Copy in built artifacts & node_modules, setting ownership
-COPY --from=builder --chown=nextjs:nodejs /app/apps/frontend/.next ./apps/frontend/.next
-COPY --from=builder --chown=nextjs:nodejs /app/apps/frontend/package.json ./apps/frontend/
-COPY --from=builder --chown=nextjs:nodejs /app/apps/backend/dist ./apps/backend/dist
-COPY --from=builder --chown=nextjs:nodejs /app/apps/backend/package.json ./apps/backend/
-COPY --from=builder --chown=nextjs:nodejs /app/apps/backend/drizzle ./apps/backend/drizzle
-COPY --from=builder --chown=nextjs:nodejs /app/apps/backend/drizzle.config.ts ./apps/backend/
-COPY --from=builder --chown=nextjs:nodejs /app/packages ./packages
-COPY --from=builder --chown=nextjs:nodejs /app/node_modules ./node_modules
-COPY --from=builder --chown=nextjs:nodejs /app/package.json ./
-COPY --from=builder --chown=nextjs:nodejs /app/pnpm-workspace.yaml ./
+# bring in built artifacts & node_modules
+COPY --from=builder --chown=root:root /app/apps/frontend/.next      ./apps/frontend/.next
+COPY --from=builder --chown=root:root /app/apps/frontend/package.json ./apps/frontend/
+COPY --from=builder --chown=root:root /app/apps/backend/dist     ./apps/backend/dist
+COPY --from=builder --chown=root:root /app/apps/backend/package.json  ./apps/backend/
+COPY --from=builder --chown=root:root /app/apps/backend/drizzle    ./apps/backend/drizzle
+COPY --from=builder --chown=root:root /app/apps/backend/drizzle.config.ts ./apps/backend/
+COPY --from=builder --chown=root:root /app/packages             ./packages
+COPY --from=builder --chown=root:root /app/package.json          ./
+COPY --from=builder --chown=root:root /app/pnpm-workspace.yaml    ./
+COPY --from=builder --chown=root:root /app/node_modules          ./node_modules
 
-# Make /app and nextjs home writable
-RUN chown -R nextjs:nodejs /app \
- && mkdir -p /home/nextjs/.local/share/pnpm/store/v3 \
- && chown -R nextjs:nodejs /home/nextjs/.local/share/pnpm
+# install prod‑only deps + drizzle‑kit, *as root* so pnpm store stays consistent
+RUN pnpm install --prod \
+ && cd apps/backend && pnpm add drizzle-kit@0.31.1
 
-# Switch into the unprivileged user
+# fix ownership
+RUN chown -R nextjs:nodejs /app
+
 USER nextjs
 
-# Install production dependencies into nextjs’s pnpm store
-RUN pnpm install --prod --store /home/nextjs/.local/share/pnpm/store/v3
-
-# Install drizzle‑kit for migrations into the same store
-RUN cd apps/backend \
- && pnpm add drizzle-kit@0.31.1 --store /home/nextjs/.local/share/pnpm/store/v3
-
-# Copy entrypoint & mark executable
+# entrypoint & ports
 COPY --chown=nextjs:nodejs docker-entrypoint.sh ./
 RUN chmod +x docker-entrypoint.sh
 
-# Expose & healthcheck
 EXPOSE 12008
 HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
   CMD curl -f http://localhost:12008/health || exit 1
 
-# Start both PostgreSQL and MetaMCP
 CMD ["./docker-entrypoint.sh"]
