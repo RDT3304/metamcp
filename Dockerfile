@@ -1,7 +1,6 @@
-# Fixed Dockerfile for RDT3304/metamcp
 FROM node:20-slim AS base
 
-# Install pnpm and basic tools
+# Install pnpm and basic tools (including drizzle-kit globally)
 RUN apt-get update && apt-get install -y \
     curl \
     gnupg \
@@ -17,8 +16,7 @@ WORKDIR /app
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY turbo.json ./
 
-# Create package directories and copy package.json files individually
-# This avoids the glob pattern issue that was causing the Turborepo error
+# Copy package files individually to avoid glob issues
 COPY apps/frontend/package.json ./apps/frontend/package.json
 COPY apps/backend/package.json ./apps/backend/package.json
 
@@ -34,9 +32,8 @@ COPY . .
 # Build the application
 RUN pnpm build
 
-# Install only production dependencies and drizzle-kit
+# Install only production dependencies
 RUN pnpm install --prod --ignore-scripts
-RUN pnpm add drizzle-kit --save-prod
 
 # Create non-root user
 RUN useradd -m -u 1001 nextjs
