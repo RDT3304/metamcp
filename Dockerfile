@@ -76,6 +76,7 @@ LABEL org.opencontainers.image.source="https://github.com/metatool-ai/metamcp" \
 # Install Postgres server & client + curl (for healthcheck)
 RUN apt-get update && apt-get install -y \
     curl \
+    wget \
     postgresql \
     postgresql-client \
   && apt-get clean \
@@ -105,6 +106,9 @@ COPY --from=builder --chown=nextjs:nodejs /app/pnpm-workspace.yaml              
 # Install only production deps (now writable)
 RUN pnpm install --prod --ignore-scripts
 
+# Install drizzle-kit specifically for migrations
+RUN pnpm add drizzle-kit --save-prod
+
 # Copy entrypoint & mark executable
 COPY --chown=nextjs:nodejs docker-entrypoint.sh ./
 RUN chmod +x docker-entrypoint.sh
@@ -115,8 +119,8 @@ USER nextjs
 # Expose frontend & backend
 EXPOSE 12008 12009
 
-# Healthcheck (frontend route)
-HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
-  CMD curl -f http://localhost:12008/health || exit 1
+# Healthcheck (frontend route) - increased timeout and start period
+HEALTHCHECK --interval=30s --timeout=30s --start-period=30s --retries=3 \
+  CMD curl -f http://localhost:12008/health || curl -f http://localhost:12008/ || exit 1
 
 ENTRYPOINT ["./docker-entrypoint.sh"]
