@@ -1,4 +1,4 @@
-# This is a Coolify-specific Dockerfile that fixes the drizzle-kit issue
+# Fixed Dockerfile for RDT3304/metamcp
 FROM node:20-slim AS base
 
 # Install pnpm and basic tools
@@ -13,11 +13,17 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-# Copy package files
-COPY package*.json pnpm-lock.yaml ./
-COPY apps/frontend/package.json ./apps/frontend/
-COPY apps/backend/package.json ./apps/backend/
-COPY packages/*/package.json ./packages/*/
+# Copy root package files first
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY turbo.json ./
+
+# Create package directories and copy package.json files individually
+# This avoids the glob pattern issue that was causing the Turborepo error
+COPY apps/frontend/package.json ./apps/frontend/package.json
+COPY apps/backend/package.json ./apps/backend/package.json
+
+# Copy the entire packages directory (this avoids glob pattern issues)
+COPY packages/ ./packages/
 
 # Install all dependencies (including dev for build)
 RUN pnpm install --frozen-lockfile
@@ -28,8 +34,9 @@ COPY . .
 # Build the application
 RUN pnpm build
 
-# Install only production dependencies
+# Install only production dependencies and drizzle-kit
 RUN pnpm install --prod --ignore-scripts
+RUN pnpm add drizzle-kit --save-prod
 
 # Create non-root user
 RUN useradd -m -u 1001 nextjs
