@@ -5,13 +5,13 @@ ENV PG_MAJOR=15
 ENV PATH="/usr/lib/postgresql/${PG_MAJOR}/bin:${PATH}"
 ENV PGDATA=/home/nextjs/pgdata
 
-# Install pnpm and basic tools (including drizzle-kit globally)
+# Install pnpm and basic tools (no global drizzle-kit to avoid version conflicts)
 RUN apt-get update && apt-get install -y \
     curl \
     gnupg \
     postgresql \
     postgresql-client \
-    && npm install -g pnpm@10.12.0 drizzle-kit \
+    && npm install -g pnpm@10.12.0 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
@@ -25,7 +25,7 @@ COPY turbo.json ./
 COPY apps/frontend/package.json ./apps/frontend/package.json
 COPY apps/backend/package.json ./apps/backend/package.json
 
-# Copy the entire packages directory (this avoids glob pattern issues)
+# Copy the entire packages directory
 COPY packages/ ./packages/
 
 # Install all dependencies (including dev for build)
@@ -39,6 +39,9 @@ RUN pnpm build
 
 # Install only production dependencies
 RUN pnpm install --prod --ignore-scripts
+
+# Install compatible drizzle versions at workspace root (this fixes the version issue)
+RUN pnpm add drizzle-orm drizzle-kit -w
 
 # Create non-root user
 RUN useradd -m -u 1001 nextjs
