@@ -55,7 +55,7 @@ LABEL org.opencontainers.image.source="https://github.com/metatool-ai/metamcp"
 LABEL org.opencontainers.image.description="MetaMCP - aggregates MCP servers into a unified MetaMCP"
 LABEL org.opencontainers.image.licenses="MIT"
 LABEL org.opencontainers.image.title="MetaMCP"
-LABEL org.opencontainers.image.vendor="metatool‑ai"
+LABEL org.opencontainers.image.vendor="metatool-ai"
 
 # Install curl, PostgreSQL & client
 RUN apt-get update && apt-get install -y \
@@ -78,7 +78,7 @@ RUN adduser  --system --uid 1001 --home /home/nextjs nextjs && \
     mkdir -p /home/nextjs/.cache/node/corepack && \
     chown -R nextjs:nodejs /home/nextjs
 
-# Copy in built artifacts, setting ownership
+# Copy in built artifacts & node_modules, setting ownership
 COPY --from=builder --chown=nextjs:nodejs /app/apps/frontend/.next ./apps/frontend/.next
 COPY --from=builder --chown=nextjs:nodejs /app/apps/frontend/package.json ./apps/frontend/
 COPY --from=builder --chown=nextjs:nodejs /app/apps/backend/dist ./apps/backend/dist
@@ -90,17 +90,20 @@ COPY --from=builder --chown=nextjs:nodejs /app/node_modules ./node_modules
 COPY --from=builder --chown=nextjs:nodejs /app/package.json ./
 COPY --from=builder --chown=nextjs:nodejs /app/pnpm-workspace.yaml ./
 
-# Make /app fully owned by nextjs so pnpm can write temp files
-RUN chown -R nextjs:nodejs /app
+# Make /app and nextjs home writable
+RUN chown -R nextjs:nodejs /app \
+ && mkdir -p /home/nextjs/.local/share/pnpm/store/v3 \
+ && chown -R nextjs:nodejs /home/nextjs/.local/share/pnpm
 
 # Switch into the unprivileged user
 USER nextjs
 
-# Install production dependencies
-RUN pnpm install --prod
+# Install production dependencies into nextjs’s pnpm store
+RUN pnpm install --prod --store /home/nextjs/.local/share/pnpm/store/v3
 
-# Install drizzle-kit for migrations
-RUN cd apps/backend && pnpm add drizzle-kit@0.31.1
+# Install drizzle‑kit for migrations into the same store
+RUN cd apps/backend \
+ && pnpm add drizzle-kit@0.31.1 --store /home/nextjs/.local/share/pnpm/store/v3
 
 # Copy entrypoint & mark executable
 COPY --chown=nextjs:nodejs docker-entrypoint.sh ./
