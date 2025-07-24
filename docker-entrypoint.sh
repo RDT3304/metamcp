@@ -46,7 +46,7 @@ run_migrations() {
 }
 
 # Set default values for postgres connection if not provided
-POSTGRES_HOST=${POSTGRES_HOST:-postgres}
+POSTGRES_HOST=${POSTGRES_HOST:-localhost}
 POSTGRES_PORT=${POSTGRES_PORT:-5432}
 POSTGRES_USER=${POSTGRES_USER:-postgres}
 
