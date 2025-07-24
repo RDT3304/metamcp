@@ -15,7 +15,7 @@ RUN apt-get update && apt-get install -y \
 FROM base AS deps
 WORKDIR /app
 
-ENV NEXT_TELEMETRY_DISABLED 1
+ENV NEXT_TELEMETRY_DISABLED=1
 
 # Copy root package files
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
@@ -57,7 +57,7 @@ LABEL org.opencontainers.image.source="https://github.com/metatool-ai/metamcp"
 LABEL org.opencontainers.image.description="MetaMCP - aggregates MCP servers into a unified MetaMCP"
 LABEL org.opencontainers.image.licenses="MIT"
 LABEL org.opencontainers.image.title="MetaMCP"
-LABEL org.opencontainers.image.vendor="metatool-ai"
+LABEL org.opencontainers.image.vendor="metatool‑ai"
 
 # Install curl, PostgreSQL server, and client
 RUN apt-get update && apt-get install -y \
@@ -67,18 +67,21 @@ RUN apt-get update && apt-get install -y \
   && apt-get clean \
   && rm -rf /var/lib/apt/lists/*
 
-# Initialize PostgreSQL data directory
+# Initialize PostgreSQL data directory (must run as postgres)
 USER postgres
 RUN /usr/lib/postgresql/15/bin/initdb -D /var/lib/postgresql/data
+
+# Back to root for subsequent steps
 USER root
 
-USER nextjs
-
-# Create non-root user
+# Create non-root group and user
 RUN addgroup --system --gid 1001 nodejs
-RUN adduser --system --uid 1001 --home /home/nextjs nextjs && \
+RUN adduser  --system --uid 1001 --home /home/nextjs nextjs && \
     mkdir -p /home/nextjs/.cache/node/corepack && \
     chown -R nextjs:nodejs /home/nextjs
+
+# Now switch into the unprivileged user
+USER nextjs
 
 # Copy built applications and packages
 COPY --from=builder --chown=nextjs:nodejs /app/apps/frontend/.next ./apps/frontend/.next
@@ -102,14 +105,12 @@ RUN cd apps/backend && pnpm add drizzle-kit@0.31.1
 COPY --chown=nextjs:nodejs docker-entrypoint.sh ./
 RUN chmod +x docker-entrypoint.sh
 
-USER nextjs
-
 # Expose frontend port
 EXPOSE 12008
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:12008/health || exit 1
+  CMD curl -f http://localhost:12008/health || exit 1
 
 # Start both PostgreSQL and MetaMCP
 CMD ["./docker-entrypoint.sh"]
