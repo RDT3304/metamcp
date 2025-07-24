@@ -1,72 +1,82 @@
 #!/bin/sh
-set -euo pipefail
+set -eu
 
-# ------------ Config defaults ------------
-PGDATA="${PGDATA:-/app/pgdata}"
-POSTGRES_HOST="${POSTGRES_HOST:-localhost}"
-POSTGRES_PORT="${POSTGRES_PORT:-5432}"
-POSTGRES_USER="${POSTGRES_USER:-postgres}"   # superuser created by initdb with -U below
+DATA_DIR="/var/lib/postgresql/data"
+LOGFILE="/var/lib/postgresql/logfile"
 
-# ------------ Postgres bootstrap ------------
 echo "🟢 Starting embedded PostgreSQL…"
 
-# Ensure data dir exists and is owned by us (in case volume mounted)
-mkdir -p "$PGDATA"
-chmod 700 "$PGDATA"
-
-if [ ! -f "$PGDATA/PG_VERSION" ]; then
-  echo "  • initializing database cluster in $PGDATA…"
-  initdb -D "$PGDATA" -U "$POSTGRES_USER"
+# Initialize DB on first run
+if [ ! -f "$DATA_DIR/PG_VERSION" ]; then
+  echo "  • initializing database cluster…"
+  initdb -D "$DATA_DIR"
 fi
 
 # Launch Postgres in background
-pg_ctl -D "$PGDATA" -l "$PGDATA/logfile" start
+pg_ctl -D "$DATA_DIR" -l "$LOGFILE" start
 
-# Wait until Postgres is ready
-echo "Waiting for PostgreSQL to be ready..."
-until pg_isready -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER" >/dev/null 2>&1; do
-  echo "PostgreSQL is not ready - sleeping 2 seconds"
-  sleep 2
-done
-echo "PostgreSQL is ready!"
+# ---- Helpers ---------------------------------------------------------------
 
-# ------------ Migrations ------------
-echo "Running database migrations..."
-cd /app/apps/backend
+wait_for_postgres() {
+  echo "Waiting for PostgreSQL to be ready..."
+  POSTGRES_HOST=${POSTGRES_HOST:-localhost}
+  POSTGRES_PORT=${POSTGRES_PORT:-5432}
+  POSTGRES_USER=${POSTGRES_USER:-postgres}
 
-if [ -d "drizzle" ] && ls -1 drizzle/*.sql >/dev/null 2>&1; then
-  echo "Found migration files, running migrations..."
-  if pnpm exec drizzle-kit migrate; then
-    echo "✅ Migrations completed successfully!"
+  until pg_isready -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER"; do
+    echo "PostgreSQL is not ready - sleeping 2 seconds"
+    sleep 2
+  done
+  echo "PostgreSQL is ready!"
+}
+
+run_migrations() {
+  echo "Running database migrations..."
+  cd /app/apps/backend
+
+  if [ -d "drizzle" ] && ls -1 drizzle/*.sql >/dev/null 2>&1; then
+    echo "Found migration files, running migrations..."
+    if pnpm exec drizzle-kit migrate; then
+      echo "✅ Migrations completed successfully!"
+    else
+      echo "❌ Migration failed! Exiting..."
+      exit 1
+    fi
   else
-    echo "❌ Migration failed! Exiting..."
-    exit 1
+    echo "No migrations found or directory empty"
   fi
-else
-  echo "No migrations found or directory empty"
-fi
 
-cd /app
+  cd /app
+}
 
-# ------------ Start services ------------
+# ---- Start sequence --------------------------------------------------------
+
+wait_for_postgres
+run_migrations
+
+# Start backend in the background
 echo "Starting backend server..."
 cd /app/apps/backend
 PORT=12009 node dist/index.js &
 BACKEND_PID=$!
 
+# Give it a moment
 sleep 3
+
 if ! kill -0 "$BACKEND_PID" 2>/dev/null; then
   echo "❌ Backend server died! Exiting..."
   exit 1
 fi
 echo "✅ Backend server started successfully (PID: $BACKEND_PID)"
 
+# Start frontend
 echo "Starting frontend server..."
 cd /app/apps/frontend
 PORT=12008 pnpm start &
 FRONTEND_PID=$!
 
 sleep 3
+
 if ! kill -0 "$FRONTEND_PID" 2>/dev/null; then
   echo "❌ Frontend server died! Exiting..."
   kill "$BACKEND_PID" 2>/dev/null || true
@@ -74,13 +84,15 @@ if ! kill -0 "$FRONTEND_PID" 2>/dev/null; then
 fi
 echo "✅ Frontend server started successfully (PID: $FRONTEND_PID)"
 
-# ------------ Cleanup & wait ------------
+# ---- Graceful shutdown -----------------------------------------------------
+
 cleanup() {
   echo "Shutting down services..."
   kill "$BACKEND_PID" 2>/dev/null || true
   kill "$FRONTEND_PID" 2>/dev/null || true
-  # Stop Postgres gracefully
-  pg_ctl -D "$PGDATA" stop -m fast || true
+  # Stop postgres nicely
+  pg_ctl -D "$DATA_DIR" stop -m fast 2>/dev/null || true
+
   wait "$BACKEND_PID" 2>/dev/null || true
   wait "$FRONTEND_PID" 2>/dev/null || true
   echo "Services stopped"
@@ -92,5 +104,6 @@ echo "Services started successfully!"
 echo "Backend running on port 12009"
 echo "Frontend running on port 12008"
 
+# Wait on both processes
 wait "$BACKEND_PID"
 wait "$FRONTEND_PID"
