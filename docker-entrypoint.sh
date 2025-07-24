@@ -1,8 +1,14 @@
 #!/bin/sh
 set -eu
 
-DATA_DIR="/var/lib/postgresql/data"
-LOGFILE="/var/lib/postgresql/logfile"
+# ---- Config -----------------------------------------------------------------
+: "${PGDATA:=/home/nextjs/pgdata}"
+: "${POSTGRES_HOST:=localhost}"
+: "${POSTGRES_PORT:=5432}"
+: "${POSTGRES_USER:=postgres}"
+
+DATA_DIR="$PGDATA"
+LOGFILE="$PGDATA/postgres.log"
 
 echo "🟢 Starting embedded PostgreSQL…"
 
@@ -12,17 +18,11 @@ if [ ! -f "$DATA_DIR/PG_VERSION" ]; then
   initdb -D "$DATA_DIR"
 fi
 
-# Launch Postgres in background
+# Start Postgres in background
 pg_ctl -D "$DATA_DIR" -l "$LOGFILE" start
-
-# ---- Helpers ---------------------------------------------------------------
 
 wait_for_postgres() {
   echo "Waiting for PostgreSQL to be ready..."
-  POSTGRES_HOST=${POSTGRES_HOST:-localhost}
-  POSTGRES_PORT=${POSTGRES_PORT:-5432}
-  POSTGRES_USER=${POSTGRES_USER:-postgres}
-
   until pg_isready -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER"; do
     echo "PostgreSQL is not ready - sleeping 2 seconds"
     sleep 2
@@ -49,34 +49,28 @@ run_migrations() {
   cd /app
 }
 
-# ---- Start sequence --------------------------------------------------------
-
+# ---- Start sequence ---------------------------------------------------------
 wait_for_postgres
 run_migrations
 
-# Start backend in the background
+# Backend
 echo "Starting backend server..."
 cd /app/apps/backend
 PORT=12009 node dist/index.js &
 BACKEND_PID=$!
-
-# Give it a moment
 sleep 3
-
 if ! kill -0 "$BACKEND_PID" 2>/dev/null; then
   echo "❌ Backend server died! Exiting..."
   exit 1
 fi
 echo "✅ Backend server started successfully (PID: $BACKEND_PID)"
 
-# Start frontend
+# Frontend
 echo "Starting frontend server..."
 cd /app/apps/frontend
 PORT=12008 pnpm start &
 FRONTEND_PID=$!
-
 sleep 3
-
 if ! kill -0 "$FRONTEND_PID" 2>/dev/null; then
   echo "❌ Frontend server died! Exiting..."
   kill "$BACKEND_PID" 2>/dev/null || true
@@ -84,13 +78,10 @@ if ! kill -0 "$FRONTEND_PID" 2>/dev/null; then
 fi
 echo "✅ Frontend server started successfully (PID: $FRONTEND_PID)"
 
-# ---- Graceful shutdown -----------------------------------------------------
-
 cleanup() {
   echo "Shutting down services..."
   kill "$BACKEND_PID" 2>/dev/null || true
   kill "$FRONTEND_PID" 2>/dev/null || true
-  # Stop postgres nicely
   pg_ctl -D "$DATA_DIR" stop -m fast 2>/dev/null || true
 
   wait "$BACKEND_PID" 2>/dev/null || true
@@ -104,6 +95,5 @@ echo "Services started successfully!"
 echo "Backend running on port 12009"
 echo "Frontend running on port 12008"
 
-# Wait on both processes
 wait "$BACKEND_PID"
 wait "$FRONTEND_PID"
