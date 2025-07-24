@@ -2,16 +2,14 @@
 
 set -e
 
-echo "Starting MetaMCP services..."
-
-+echo "🟢 Starting embedded PostgreSQL…"
-+# initialize DB on first run
-+if [ ! -f "/var/lib/postgresql/data/PG_VERSION" ]; then
-+  echo "  • initializing database cluster…"
-+  initdb -D /var/lib/postgresql/data
-+fi
-+# launch Postgres in background
-+pg_ctl -D /var/lib/postgresql/data -l /var/lib/postgresql/logfile start
+echo "🟢 Starting embedded PostgreSQL…"
+# initialize DB on first run
+if [ ! -f "/var/lib/postgresql/data/PG_VERSION" ]; then
+  echo "  • initializing database cluster…"
+  initdb -D /var/lib/postgresql/data
+fi
+# launch Postgres in background
+pg_ctl -D /var/lib/postgresql/data -l /var/lib/postgresql/logfile start
 
 # Function to wait for postgres
 wait_for_postgres() {
