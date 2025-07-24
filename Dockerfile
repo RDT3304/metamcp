@@ -1,5 +1,10 @@
 FROM node:20-slim AS base
 
+# Set PostgreSQL version and PATH
+ENV PG_MAJOR=15
+ENV PATH="/usr/lib/postgresql/${PG_MAJOR}/bin:${PATH}"
+ENV PGDATA=/home/nextjs/pgdata
+
 # Install pnpm and basic tools (including drizzle-kit globally)
 RUN apt-get update && apt-get install -y \
     curl \
@@ -38,8 +43,7 @@ RUN pnpm install --prod --ignore-scripts
 # Create non-root user
 RUN useradd -m -u 1001 nextjs
 
-# Set up PostgreSQL data directory
-ENV PGDATA=/home/nextjs/pgdata
+# Set up PostgreSQL data directory (PGDATA already set above)
 RUN mkdir -p $PGDATA /var/run/postgresql \
     && chown -R nextjs:nextjs /home/nextjs $PGDATA /var/run/postgresql
 
