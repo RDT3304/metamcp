@@ -6,10 +6,21 @@ set -eu
 : "${POSTGRES_HOST:=localhost}"
 : "${POSTGRES_PORT:=5432}"
 : "${POSTGRES_USER:=postgres}"
+: "${POSTGRES_DB:=postgres}"
 : "${SKIP_MIGRATIONS:=false}"
 
 DATA_DIR="$PGDATA"
 LOGFILE="$PGDATA/postgres.log"
+
+# Set database URL for drizzle-kit if not already set
+if [ -z "${DATABASE_URL:-}" ]; then
+    export DATABASE_URL="postgresql://${POSTGRES_USER}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}"
+    echo "🔗 Database URL set to: $DATABASE_URL"
+fi
+
+# Also set alternative environment variables that might be expected
+export POSTGRES_URL="$DATABASE_URL"
+export DB_URL="$DATABASE_URL"
 
 echo "🟢 Starting embedded PostgreSQL…"
 
@@ -17,8 +28,6 @@ echo "🟢 Starting embedded PostgreSQL…"
 if ! command -v initdb >/dev/null 2>&1; then
     echo "❌ initdb command not found! PostgreSQL tools are not in PATH."
     echo "PATH: $PATH"
-    echo "Available commands:"
-    ls -la /usr/lib/postgresql/*/bin/ 2>/dev/null || echo "PostgreSQL bin directory not found"
     exit 1
 fi
 
@@ -49,7 +58,8 @@ wait_for_postgres() {
     local retries=30
     local count=0
     
-    until pg_isready -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER"; do
+    # First wait for any user to connect
+    until pg_isready -h "$POSTGRES_HOST" -p "$POSTGRES_PORT"; do
         if [ $count -ge $retries ]; then
             echo "❌ PostgreSQL failed to start after $retries attempts"
             cat "$LOGFILE" 2>/dev/null || echo "No log file available"
@@ -62,6 +72,35 @@ wait_for_postgres() {
     echo "PostgreSQL is ready!"
 }
 
+setup_postgres_user() {
+    echo "🔧 Setting up PostgreSQL user and database..."
+    
+    # Connect as the default user (nextjs) and create postgres user/database
+    if ! psql -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U nextjs -d nextjs -c "SELECT 1;" >/dev/null 2>&1; then
+        echo "Creating initial database..."
+        createdb -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U nextjs nextjs 2>/dev/null || true
+    fi
+    
+    # Create postgres user if it doesn't exist
+    echo "Creating postgres user and database..."
+    psql -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U nextjs -d nextjs -c "
+        DO \$\$
+        BEGIN
+            IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'postgres') THEN
+                CREATE ROLE postgres WITH LOGIN SUPERUSER;
+            END IF;
+        END
+        \$\$;
+    " 2>/dev/null || true
+    
+    # Create postgres database if it doesn't exist
+    psql -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U nextjs -d nextjs -c "
+        SELECT 'CREATE DATABASE postgres' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'postgres')\gexec
+    " 2>/dev/null || true
+    
+    echo "✅ PostgreSQL user and database setup complete!"
+}
+
 run_migrations() {
     if [ "$SKIP_MIGRATIONS" = "true" ]; then
         echo "⚠️  Skipping migrations (SKIP_MIGRATIONS=true)"
@@ -69,30 +108,17 @@ run_migrations() {
     fi
 
     echo "Running database migrations..."
+    echo "🔗 Using DATABASE_URL: $DATABASE_URL"
+    
     cd /app/apps/backend
     
     if [ -d "drizzle" ] && ls -1 drizzle/*.sql >/dev/null 2>&1; then
         echo "Found migration files, running migrations..."
         
-        # Check multiple ways drizzle-kit might be available
-        if command -v drizzle-kit >/dev/null 2>&1; then
-            if drizzle-kit migrate; then
-                echo "✅ Migrations completed successfully!"
-            else
-                echo "❌ Migration failed! Exiting..."
-                exit 1
-            fi
-        elif pnpm exec drizzle-kit --version >/dev/null 2>&1; then
-            if pnpm exec drizzle-kit migrate; then
-                echo "✅ Migrations completed successfully!"
-            else
-                echo "❌ Migration failed! Exiting..."
-                exit 1
-            fi
+        if pnpm exec drizzle-kit migrate; then
+            echo "✅ Migrations completed successfully!"
         else
-            echo "❌ drizzle-kit not found!"
-            echo "Available commands:"
-            which pnpm npx node drizzle-kit || echo "Basic tools check failed"
+            echo "❌ Migration failed! Exiting..."
             exit 1
         fi
     else
@@ -125,6 +151,7 @@ start_service() {
 
 # ---- Start sequence ---------------------------------------------------------
 wait_for_postgres
+setup_postgres_user
 run_migrations
 
 # Start backend
