@@ -1,7 +1,9 @@
-# Use the official uv image as base
+# -----------------------------------------------------------------------------
+# Base image with Node & pnpm
+# -----------------------------------------------------------------------------
 FROM ghcr.io/astral-sh/uv:debian AS base
 
-# Install Node.js and pnpm directly
+# Install Node.js 20 + pnpm
 RUN apt-get update && apt-get install -y \
     curl \
     gnupg \
@@ -11,63 +13,67 @@ RUN apt-get update && apt-get install -y \
   && apt-get clean \
   && rm -rf /var/lib/apt/lists/*
 
-# -----------------------------
-# deps stage: install workspace deps
-# -----------------------------
+# -----------------------------------------------------------------------------
+# deps stage – install workspace deps once
+# -----------------------------------------------------------------------------
 FROM base AS deps
 WORKDIR /app
 ENV NEXT_TELEMETRY_DISABLED=1
 
-# Root package files
+# Root manifests
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY turbo.json ./
 
-# Workspace package.json files
-COPY apps/frontend/package.json                 ./apps/frontend/
-COPY apps/backend/package.json                  ./apps/backend/
-COPY packages/eslint-config/package.json        ./packages/eslint-config/
-COPY packages/trpc/package.json                 ./packages/trpc/
-COPY packages/typescript-config/package.json    ./packages/typescript-config/
-COPY packages/zod-types/package.json            ./packages/zod-types/
+# Workspace manifests
+COPY apps/frontend/package.json                    ./apps/frontend/
+COPY apps/backend/package.json                     ./apps/backend/
+COPY packages/eslint-config/package.json           ./packages/eslint-config/
+COPY packages/trpc/package.json                    ./packages/trpc/
+COPY packages/typescript-config/package.json       ./packages/typescript-config/
+COPY packages/zod-types/package.json               ./packages/zod-types/
 
-# Install all deps (cached for builder)
+# Install everything (dev + prod) for build
 RUN pnpm install --frozen-lockfile
 
-# -----------------------------
-# builder stage: build everything
-# -----------------------------
+# -----------------------------------------------------------------------------
+# builder – compile apps
+# -----------------------------------------------------------------------------
 FROM base AS builder
 WORKDIR /app
 
-# Bring in deps
-COPY --from=deps /app/node_modules                     ./node_modules
-COPY --from=deps /app/apps/frontend/node_modules       ./apps/frontend/node_modules
-COPY --from=deps /app/apps/backend/node_modules        ./apps/backend/node_modules
-COPY --from=deps /app/packages                         ./packages
+# Bring in node_modules and packages from deps
+COPY --from=deps /app/node_modules                         ./node_modules
+COPY --from=deps /app/apps/frontend/node_modules           ./apps/frontend/node_modules
+COPY --from=deps /app/apps/backend/node_modules            ./apps/backend/node_modules
+COPY --from=deps /app/packages                             ./packages
 
-# Source + build
+# Copy full source
 COPY . .
+
+# Build all packages/apps
 RUN pnpm build
 
-# -----------------------------
-# runner stage: final production image
-# -----------------------------
+# -----------------------------------------------------------------------------
+# runner – production image
+# -----------------------------------------------------------------------------
 FROM base AS runner
 WORKDIR /app
 
-# Make sure Postgres binaries are reachable
-ENV PATH="/usr/lib/postgresql/15/bin:${PATH}"
-# Tell postgres where to store its data at runtime (owned by nextjs)
-ENV PGDATA=/app/pgdata
+# --- Versions & paths --------------------------------------------------------
+ENV PG_MAJOR=15
+ENV PATH="/usr/lib/postgresql/${PG_MAJOR}/bin:${PATH}"
 
-# OCI image labels
-LABEL org.opencontainers.image.source="https://github.com/metatool-ai/metamcp"
-LABEL org.opencontainers.image.description="MetaMCP - aggregates MCP servers into a unified MetaMCP"
-LABEL org.opencontainers.image.licenses="MIT"
-LABEL org.opencontainers.image.title="MetaMCP"
-LABEL org.opencontainers.image.vendor="metatool-ai"
+# Use a writable PGDATA owned by our non-root user
+ENV PGDATA=/home/nextjs/pgdata
 
-# Install curl, PostgreSQL server & client
+# OCI labels
+LABEL org.opencontainers.image.source="https://github.com/metatool-ai/metamcp" \
+      org.opencontainers.image.description="MetaMCP - aggregates MCP servers into a unified MetaMCP" \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.title="MetaMCP" \
+      org.opencontainers.image.vendor="metatool-ai"
+
+# Install Postgres server & client + curl (for healthcheck)
 RUN apt-get update && apt-get install -y \
     curl \
     postgresql \
@@ -75,14 +81,16 @@ RUN apt-get update && apt-get install -y \
   && apt-get clean \
   && rm -rf /var/lib/apt/lists/*
 
-# Create app user
+# Create non-root user & group
 RUN addgroup --system --gid 1001 nodejs \
  && adduser  --system --uid 1001 --home /home/nextjs nextjs \
- && mkdir -p /home/nextjs/.local/share/pnpm/store/v3 \
- && mkdir -p "$PGDATA" \
- && chown -R nextjs:nodejs /home/nextjs "$PGDATA"
+ && mkdir -p /home/nextjs/.cache/node/corepack
 
-# Copy built outputs (as nextjs)
+# Ensure directories Postgres needs exist and are writable
+RUN mkdir -p "$PGDATA" /var/run/postgresql \
+ && chown -R nextjs:nodejs /home/nextjs "$PGDATA" /var/run/postgresql /var/lib/postgresql
+
+# Copy built output (ownership set directly)
 COPY --from=builder --chown=nextjs:nodejs /app/apps/frontend/.next              ./apps/frontend/.next
 COPY --from=builder --chown=nextjs:nodejs /app/apps/frontend/package.json       ./apps/frontend/
 COPY --from=builder --chown=nextjs:nodejs /app/apps/backend/dist                ./apps/backend/dist
@@ -94,20 +102,20 @@ COPY --from=builder --chown=nextjs:nodejs /app/node_modules                     
 COPY --from=builder --chown=nextjs:nodejs /app/package.json                     ./
 COPY --from=builder --chown=nextjs:nodejs /app/pnpm-workspace.yaml              ./
 
+# Install only production deps (now writable)
+RUN pnpm install --prod --ignore-scripts
+
 # Copy entrypoint & mark executable
 COPY --chown=nextjs:nodejs docker-entrypoint.sh ./
 RUN chmod +x docker-entrypoint.sh
 
-# Final ownership sweep (safe no-op if already owned)
-RUN chown -R nextjs:nodejs /app
-
 # Switch to non-root
 USER nextjs
 
-# Expose ports
+# Expose frontend & backend
 EXPOSE 12008 12009
 
-# Health check
+# Healthcheck (frontend route)
 HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
   CMD curl -f http://localhost:12008/health || exit 1
 
