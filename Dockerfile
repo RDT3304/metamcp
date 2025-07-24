@@ -69,7 +69,7 @@ RUN apt-get update && apt-get install -y \
 
 # Initialize PostgreSQL data directory
 USER postgres
-RUN /usr/bin/initdb -D /var/lib/postgresql/data
+RUN /usr/lib/postgresql/15/bin/initdb -D /var/lib/postgresql/data
 USER nextjs
 
 # Create non-root user
