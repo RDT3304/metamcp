@@ -11,6 +11,7 @@ RUN apt-get update && apt-get install -y \
     gnupg \
     postgresql \
     postgresql-client \
+    gosu \
     && npm install -g pnpm@10.12.0 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
@@ -48,7 +49,7 @@ RUN useradd -m -u 1001 nextjs
 
 # Create directories for persistent data
 RUN mkdir -p $PGDATA $METAMCP_DATA /var/run/postgresql \
-    && chown -R nextjs:nextjs /home/nextjs $PGDATA $METAMCP_DATA /var/run/postgresql
+    && chown -R nextjs:nextjs /home/nextjs $METAMCP_DATA /var/run/postgresql
 
 # Copy entrypoint script
 COPY docker-entrypoint.sh ./
