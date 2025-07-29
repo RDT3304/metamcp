@@ -1,9 +1,9 @@
 FROM node:20-slim AS base
-
 # Set PostgreSQL version and PATH
 ENV PG_MAJOR=15
 ENV PATH="/usr/lib/postgresql/${PG_MAJOR}/bin:${PATH}"
-ENV PGDATA=/home/nextjs/pgdata
+ENV PGDATA=/var/lib/postgresql/data
+ENV METAMCP_DATA=/app/data
 
 # Install pnpm and basic tools (no global drizzle-kit to avoid version conflicts)
 RUN apt-get update && apt-get install -y \
@@ -46,16 +46,18 @@ RUN pnpm add drizzle-orm drizzle-kit -w
 # Create non-root user
 RUN useradd -m -u 1001 nextjs
 
-# Set up PostgreSQL data directory (PGDATA already set above)
-RUN mkdir -p $PGDATA /var/run/postgresql \
-    && chown -R nextjs:nextjs /home/nextjs $PGDATA /var/run/postgresql
+# Create directories for persistent data
+RUN mkdir -p $PGDATA $METAMCP_DATA /var/run/postgresql \
+    && chown -R nextjs:nextjs /home/nextjs $PGDATA $METAMCP_DATA /var/run/postgresql
 
 # Copy entrypoint script
 COPY docker-entrypoint.sh ./
 RUN chmod +x docker-entrypoint.sh && chown nextjs:nextjs docker-entrypoint.sh
 
-USER nextjs
+# Declare volumes for persistent data
+VOLUME ["$PGDATA", "$METAMCP_DATA"]
 
+USER nextjs
 EXPOSE 12008 12009
 
 HEALTHCHECK --interval=30s --timeout=30s --start-period=60s --retries=3 \
