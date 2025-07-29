@@ -1,8 +1,31 @@
 #!/bin/sh
 set -eu
 
-# ---- Config -----------------------------------------------------------------
-: "${PGDATA:=/home/nextjs/pgdata}"
+# ---- Permission fixes and user switching (must run as root first) ----------
+if [ "$(id -u)" = "0" ]; then
+    echo "🔧 Running as root - fixing volume permissions..."
+    
+    # Set correct paths for mounted volumes
+    export PGDATA="${PGDATA:-/var/lib/postgresql/data}"
+    export METAMCP_DATA="${METAMCP_DATA:-/app/data}"
+    
+    # Create directories and fix permissions for mounted volumes
+    mkdir -p "$PGDATA" "$METAMCP_DATA" /var/run/postgresql
+    chown -R nextjs:nextjs "$PGDATA" "$METAMCP_DATA" /var/run/postgresql /home/nextjs
+    chmod 700 "$PGDATA"
+    chmod 755 "$METAMCP_DATA"
+    
+    echo "✅ Volume permissions fixed"
+    echo "🔄 Switching to nextjs user..."
+    
+    # Re-execute this script as nextjs user
+    exec gosu nextjs "$0" "$@"
+fi
+
+# ---- Config (now running as nextjs user) -----------------------------------
+echo "👤 Running as user: $(whoami) (UID: $(id -u))"
+
+: "${PGDATA:=/var/lib/postgresql/data}"
 : "${POSTGRES_HOST:=localhost}"
 : "${POSTGRES_PORT:=5432}"
 : "${POSTGRES_USER:=postgres}"
@@ -54,6 +77,9 @@ else
         echo "  • initializing database cluster…"
         if ! initdb -D "$DATA_DIR"; then
             echo "❌ Failed to initialize database"
+            echo "🔍 Checking permissions on data directory:"
+            ls -la "$DATA_DIR" 2>/dev/null || echo "Cannot access data directory"
+            ls -la "$(dirname "$DATA_DIR")" 2>/dev/null || echo "Cannot access parent directory"
             exit 1
         fi
     fi
