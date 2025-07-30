@@ -1,0 +1,2 @@
+Dockerfile merge=ours
+docker-entrypoint.sh merge=ours
