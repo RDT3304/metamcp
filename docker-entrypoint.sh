@@ -1,37 +1,8 @@
 #!/bin/sh
 set -eu
 
-# ---- Root Permission Setup (only runs once as root) ------------------------
-if [ "$(id -u)" = "0" ]; then
-    echo "🔧 Running as root - setting up permissions..."
-    
-    # Define paths
-    export PGDATA="${PGDATA:-/var/lib/postgresql/data}"
-    export METAMCP_DATA="${METAMCP_DATA:-/app/data}"
-    
-    # Clean up any existing data with wrong permissions
-    echo "🧹 Cleaning existing data..."
-    rm -rf "$PGDATA"/* 2>/dev/null || true
-    rm -rf "$PGDATA"/.[!.]* 2>/dev/null || true
-    
-    # Create directories with correct permissions
-    mkdir -p "$PGDATA" "$METAMCP_DATA" /var/run/postgresql
-    chown -R nextjs:nextjs "$PGDATA" "$METAMCP_DATA" /var/run/postgresql /home/nextjs
-    chmod 700 "$PGDATA"
-    chmod 755 "$METAMCP_DATA"
-    
-    echo "✅ Permissions fixed"
-    echo "🔄 Switching to nextjs user..."
-    
-    # Switch to nextjs user and re-run this script
-    exec gosu nextjs "$0" "$@"
-fi
-
-# ---- Application Logic (runs as nextjs user) -------------------------------
-echo "👤 Running as user: $(whoami) (UID: $(id -u))"
-
-# Config
-: "${PGDATA:=/var/lib/postgresql/data}"
+# ---- Config -----------------------------------------------------------------
+: "${PGDATA:=/home/nextjs/pgdata}"
 : "${POSTGRES_HOST:=localhost}"
 : "${POSTGRES_PORT:=5432}"
 : "${POSTGRES_USER:=postgres}"
@@ -40,6 +11,20 @@ echo "👤 Running as user: $(whoami) (UID: $(id -u))"
 
 DATA_DIR="$PGDATA"
 LOGFILE="$PGDATA/postgres.log"
+
+# Validate required environment variables
+validate_env() {
+    echo "🔍 Validating environment variables..."
+    
+    if [ -z "${BETTER_AUTH_SECRET:-}" ]; then
+        echo "❌ BETTER_AUTH_SECRET environment variable is required!"
+        echo "   Please set this environment variable in your Coolify deployment configuration."
+        echo "   Generate a secure secret with: openssl rand -base64 32"
+        exit 1
+    fi
+    
+    echo "✅ All required environment variables are set"
+}
 
 # Set database URL for drizzle-kit if not already set
 if [ -z "${DATABASE_URL:-}" ]; then
@@ -69,12 +54,6 @@ else
         echo "  • initializing database cluster…"
         if ! initdb -D "$DATA_DIR"; then
             echo "❌ Failed to initialize database"
-            echo "🔍 Debugging information:"
-            echo "Data directory: $DATA_DIR"
-            echo "Current user: $(whoami)"
-            echo "Directory permissions:"
-            ls -la "$DATA_DIR" 2>/dev/null || echo "Cannot access data directory"
-            ls -la "$(dirname "$DATA_DIR")" 2>/dev/null || echo "Cannot access parent directory"
             exit 1
         fi
     fi
@@ -93,6 +72,7 @@ wait_for_postgres() {
     local retries=30
     local count=0
     
+    # First wait for any user to connect
     until pg_isready -h "$POSTGRES_HOST" -p "$POSTGRES_PORT"; do
         if [ $count -ge $retries ]; then
             echo "❌ PostgreSQL failed to start after $retries attempts"
@@ -170,27 +150,79 @@ start_service() {
     echo "Starting $name server..."
     cd "$dir"
     
+    # Additional validation for backend
+    if [ "$name" = "Backend" ]; then
+        if [ -z "${BETTER_AUTH_SECRET:-}" ]; then
+            echo "❌ BETTER_AUTH_SECRET environment variable is required for backend"
+            echo "   Please set this environment variable in your deployment configuration"
+            return 1
+        fi
+        echo "✅ Backend environment validation passed"
+    fi
+    
+    echo "📂 Working directory: $(pwd)"
+    echo "🚀 Executing: $cmd"
+    
+    # Start the service in background
     eval "$cmd" &
     local pid=$!
     
-    sleep 5
-    if ! kill -0 "$pid" 2>/dev/null; then
-        echo "❌ $name server failed to start!"
-        return 1
-    fi
+    # Wait longer and check multiple times for more reliable startup detection
+    local retries=10
+    local count=0
+    
+    while [ $count -lt $retries ]; do
+        sleep 1
+        if ! kill -0 "$pid" 2>/dev/null; then
+            echo "❌ $name server process died! (attempt $((count + 1))/$retries)"
+            echo "🔍 Checking for error logs..."
+            
+            # Try to get some error information
+            if [ "$name" = "Backend" ] && [ -f "dist/index.js" ]; then
+                echo "Backend file exists: ✅"
+            elif [ "$name" = "Backend" ]; then
+                echo "❌ Backend dist/index.js not found!"
+                ls -la dist/ 2>/dev/null || echo "No dist directory found"
+            fi
+            
+            return 1
+        fi
+        count=$((count + 1))
+    done
     
     echo "✅ $name server started successfully (PID: $pid, Port: $port)"
+    
+    # Additional health check for services
+    if [ "$name" = "Backend" ]; then
+        sleep 3
+        echo "🔍 Checking backend health..."
+        if ! kill -0 "$pid" 2>/dev/null; then
+            echo "❌ Backend process died after initial startup"
+            return 1
+        fi
+    fi
+    
     return 0
 }
 
 # ---- Start sequence ---------------------------------------------------------
+echo "🔍 Starting validation and setup..."
+validate_env
 wait_for_postgres
 setup_postgres_user
 run_migrations
 
+echo "🚀 Starting application services..."
+
 # Start backend
 if ! start_service "Backend" "PORT=12009 node dist/index.js" "12009" "/app/apps/backend"; then
     echo "❌ Backend startup failed"
+    echo "🔍 Debugging information:"
+    echo "   Working directory: $(pwd)"
+    echo "   Backend directory contents:"
+    ls -la /app/apps/backend/ 2>/dev/null || echo "   Backend directory not found"
+    echo "   Dist directory contents:"
+    ls -la /app/apps/backend/dist/ 2>/dev/null || echo "   Dist directory not found"
     exit 1
 fi
 BACKEND_PID=$!
@@ -198,19 +230,21 @@ BACKEND_PID=$!
 # Start frontend
 if ! start_service "Frontend" "PORT=12008 pnpm start" "12008" "/app/apps/frontend"; then
     echo "❌ Frontend startup failed"
+    echo "🔍 Frontend directory contents:"
+    ls -la /app/apps/frontend/ 2>/dev/null || echo "   Frontend directory not found"
     kill "$BACKEND_PID" 2>/dev/null || true
     exit 1
 fi
 FRONTEND_PID=$!
 
 cleanup() {
-    echo "Shutting down services..."
+    echo "🛑 Shutting down services..."
     kill "$BACKEND_PID" 2>/dev/null || true
     kill "$FRONTEND_PID" 2>/dev/null || true
     pg_ctl -D "$DATA_DIR" stop -m fast 2>/dev/null || true
     wait "$BACKEND_PID" 2>/dev/null || true
     wait "$FRONTEND_PID" 2>/dev/null || true
-    echo "Services stopped"
+    echo "✅ Services stopped"
 }
 
 trap cleanup TERM INT
@@ -219,6 +253,8 @@ echo "🎉 All services started successfully!"
 echo "📊 Backend: http://localhost:12009"
 echo "🌐 Frontend: http://localhost:12008"
 echo "🗄️  PostgreSQL: localhost:5432"
+echo ""
+echo "🔍 Process monitoring active. Press Ctrl+C to stop all services."
 
 # Wait for both processes
 wait "$BACKEND_PID"
