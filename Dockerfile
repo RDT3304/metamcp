@@ -11,7 +11,7 @@ RUN apt-get update && apt-get install -y \
     gnupg \
     postgresql \
     postgresql-client \
-    su-exec \
+    gosu \
     && npm install -g pnpm@10.12.0 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
@@ -44,21 +44,23 @@ RUN pnpm install --prod --ignore-scripts
 # Install compatible drizzle versions at workspace root (this fixes the version issue)
 RUN pnpm add drizzle-orm drizzle-kit -w
 
-# Create non-root user
+# Create non-root user (but don't switch to it yet)
 RUN useradd -m -u 1001 nextjs
 
-# Create directories for persistent data
-RUN mkdir -p $PGDATA $METAMCP_DATA /var/run/postgresql \
+# Create directories and set basic permissions (volumes will override ownership)
+RUN mkdir -p $METAMCP_DATA /var/run/postgresql /home/nextjs \
     && chown -R nextjs:nextjs /home/nextjs $METAMCP_DATA /var/run/postgresql
 
 # Copy entrypoint script
 COPY docker-entrypoint.sh ./
-RUN chmod +x docker-entrypoint.sh && chown nextjs:nextjs docker-entrypoint.sh
+RUN chmod +x docker-entrypoint.sh
 
 # Declare volumes for persistent data
 VOLUME ["$PGDATA", "$METAMCP_DATA"]
 
-USER nextjs
+# IMPORTANT: Stay as root - entrypoint will handle user switching
+# DO NOT add "USER nextjs" here
+
 EXPOSE 12008 12009
 
 HEALTHCHECK --interval=30s --timeout=30s --start-period=60s --retries=3 \
