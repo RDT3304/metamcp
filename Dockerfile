@@ -11,7 +11,7 @@ RUN apt-get update && apt-get install -y \
     gnupg \
     postgresql \
     postgresql-client \
-    gosu \
+    su-exec \
     && npm install -g pnpm@10.12.0 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
