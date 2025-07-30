@@ -11,6 +11,14 @@ if [ "$(id -u)" = "0" ]; then
     
     # Create directories and fix permissions for mounted volumes
     mkdir -p "$PGDATA" "$METAMCP_DATA" /var/run/postgresql
+    
+    # Remove any existing data with wrong permissions and recreate
+    if [ -d "$PGDATA" ]; then
+        echo "🧹 Cleaning existing PostgreSQL data with wrong permissions..."
+        rm -rf "$PGDATA"/*
+        rm -rf "$PGDATA"/.[!.]*  # Remove hidden files but not . and ..
+    fi
+    
     chown -R nextjs:nextjs "$PGDATA" "$METAMCP_DATA" /var/run/postgresql /home/nextjs
     chmod 700 "$PGDATA"
     chmod 755 "$METAMCP_DATA"
