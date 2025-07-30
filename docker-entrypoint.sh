@@ -1,38 +1,36 @@
 #!/bin/sh
 set -eu
 
-# ---- Permission fixes and user switching (must run as root first) ----------
+# ---- Root Permission Setup (only runs once as root) ------------------------
 if [ "$(id -u)" = "0" ]; then
-    echo "🔧 Running as root - fixing volume permissions..."
+    echo "🔧 Running as root - setting up permissions..."
     
-    # Set correct paths for mounted volumes
+    # Define paths
     export PGDATA="${PGDATA:-/var/lib/postgresql/data}"
     export METAMCP_DATA="${METAMCP_DATA:-/app/data}"
     
-    # Create directories and fix permissions for mounted volumes
+    # Clean up any existing data with wrong permissions
+    echo "🧹 Cleaning existing data..."
+    rm -rf "$PGDATA"/* 2>/dev/null || true
+    rm -rf "$PGDATA"/.[!.]* 2>/dev/null || true
+    
+    # Create directories with correct permissions
     mkdir -p "$PGDATA" "$METAMCP_DATA" /var/run/postgresql
-    
-    # Remove any existing data with wrong permissions and recreate
-    if [ -d "$PGDATA" ]; then
-        echo "🧹 Cleaning existing PostgreSQL data with wrong permissions..."
-        rm -rf "$PGDATA"/*
-        rm -rf "$PGDATA"/.[!.]*  # Remove hidden files but not . and ..
-    fi
-    
     chown -R nextjs:nextjs "$PGDATA" "$METAMCP_DATA" /var/run/postgresql /home/nextjs
     chmod 700 "$PGDATA"
     chmod 755 "$METAMCP_DATA"
     
-    echo "✅ Volume permissions fixed"
+    echo "✅ Permissions fixed"
     echo "🔄 Switching to nextjs user..."
     
-    # Re-execute this script as nextjs user
+    # Switch to nextjs user and re-run this script
     exec gosu nextjs "$0" "$@"
 fi
 
-# ---- Config (now running as nextjs user) -----------------------------------
+# ---- Application Logic (runs as nextjs user) -------------------------------
 echo "👤 Running as user: $(whoami) (UID: $(id -u))"
 
+# Config
 : "${PGDATA:=/var/lib/postgresql/data}"
 : "${POSTGRES_HOST:=localhost}"
 : "${POSTGRES_PORT:=5432}"
@@ -85,7 +83,10 @@ else
         echo "  • initializing database cluster…"
         if ! initdb -D "$DATA_DIR"; then
             echo "❌ Failed to initialize database"
-            echo "🔍 Checking permissions on data directory:"
+            echo "🔍 Debugging information:"
+            echo "Data directory: $DATA_DIR"
+            echo "Current user: $(whoami)"
+            echo "Directory permissions:"
             ls -la "$DATA_DIR" 2>/dev/null || echo "Cannot access data directory"
             ls -la "$(dirname "$DATA_DIR")" 2>/dev/null || echo "Cannot access parent directory"
             exit 1
@@ -106,7 +107,6 @@ wait_for_postgres() {
     local retries=30
     local count=0
     
-    # First wait for any user to connect
     until pg_isready -h "$POSTGRES_HOST" -p "$POSTGRES_PORT"; do
         if [ $count -ge $retries ]; then
             echo "❌ PostgreSQL failed to start after $retries attempts"
